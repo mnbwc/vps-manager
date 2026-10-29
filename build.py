@@ -39,7 +39,16 @@ if not match:
 old_b64 = match.group(1)
 core_sh_updated = core_sh.replace(old_b64, index_b64)
 
-# Save install-core.sh
+
+# Step 5b: Embed consolidate.php (T-02 单用户收敛 CLI)
+CONSOLIDATE_PATH = os.path.join(WORKDIR, 'consolidate.php')
+with open(CONSOLIDATE_PATH, 'r') as f:
+    cons_php = f.read()
+cons_b64 = base64.b64encode(cons_php.encode('utf-8')).decode('utf-8')
+core_sh_updated = core_sh_updated.replace('__CONSOLIDATE_B64__', cons_b64)
+print(f"✓ consolidate.php embedded: {len(cons_b64)} chars")
+
+# Save install-core.sh（含全部嵌入后回写）
 with open(INSTALL_CORE_PATH, 'w') as f:
     f.write(core_sh_updated)
 print(f"💾 install-core.sh saved: {len(core_sh_updated.split(chr(10)))} lines, {len(core_sh_updated):,} bytes")
@@ -50,7 +59,7 @@ core_b64_new = base64.b64encode(core_gz_new).decode('utf-8')
 print(f"🗜️  install-core.sh encoded: {len(core_b64_new)} chars")
 
 # Step 7: Create install.sh (2-line wrapper)
-install_sh_content = f"#!/bin/bash\necho \"{core_b64_new}\" | base64 -d | gunzip | bash\n"
+install_sh_content = f"#!/bin/sh{chr(10)}echo \"{core_b64_new}\" | base64 -d | gunzip | bash{chr(10)}"
 with open(INSTALL_SH_PATH, 'w') as f:
     f.write(install_sh_content)
 os.chmod(INSTALL_SH_PATH, 0o755)
