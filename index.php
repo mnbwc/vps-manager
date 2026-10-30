@@ -45,7 +45,9 @@ function db(): PDO {
     if ($pdo === null) {
         $dir = dirname(DB_FILE);
         if (!is_dir($dir)) { @mkdir($dir, 0700, true); }
-        $pdo = new PDO('sqlite:' . DB_FILE);
+        if (is_file(DB_FILE) && !is_writable(DB_FILE) && function_exists('posix_getuid') && posix_getuid() === 0) { @chmod(DB_FILE, 0660); }
+        try { $pdo = new PDO('sqlite:' . DB_FILE); }
+        catch (Throwable $e) { http_response_code(500); exit('⛔ 无法打开面板数据库 ' . basename(DB_FILE) . '：请检查文件属主与运行用户一致（如 chown ' . get_current_user() . ' ' . DB_FILE . '）。'); }
         @chmod(DB_FILE, 0600);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->exec('CREATE TABLE IF NOT EXISTS users (user TEXT PRIMARY KEY, pass TEXT NOT NULL, role TEXT NOT NULL DEFAULT "user")');
