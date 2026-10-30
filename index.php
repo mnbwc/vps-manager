@@ -9,10 +9,15 @@ define('USERS_FILE', '/var/www/manager/.users');
 define('BACKUP_DIR', '/var/lib/vps-manager/backups');
 define('MIGRATION_DIR', '/var/lib/vps-manager/backups/migration');
 // RHEL 系（CentOS/Rocky/Alma）站点配置目录是 /etc/nginx/conf.d
-$_is_rhel = false;
-if (file_exists('/etc/redhat-release')) { $_is_rhel = true; }
-elseif (is_readable('/etc/os-release') && preg_match('/^(ID_LIKE|ID)=.*(rhel|centos|fedora|rocky|alma)/mi', file_get_contents('/etc/os-release'))) { $_is_rhel = true; }
-if ($_is_rhel) {
+function is_rhel(): bool { // RHEL 系判定（CentOS/Rocky/Alma/Fedora）
+    static $c = null;
+    if ($c === null) {
+        $c = file_exists('/etc/redhat-release')
+            || (is_readable('/etc/os-release') && preg_match('/^(ID_LIKE|ID)=.*(rhel|centos|fedora|rocky|alma)/mi', file_get_contents('/etc/os-release')));
+    }
+    return $c;
+}
+if (is_rhel()) {
     define('NGINX_AVAILABLE', '/etc/nginx/conf.d');
     define('NGINX_ENABLED', '/etc/nginx/conf.d');
 } else {
@@ -187,8 +192,8 @@ function selected_php_version() {
     return in_array($v, ['8.2','8.3','8.4','8.5'], true) ? $v : '8.3';
 }
 function alpine_php_sfx($v = null) { return str_replace('.', '', $v ?? selected_php_version()); }
-function php_bin($v) { return is_alpine() ? '/usr/bin/php' . str_replace('.', '', $v) : '/usr/bin/php' . $v; }
-function php_fpm_svc() { return is_alpine() ? 'php-fpm' . alpine_php_sfx() : 'php' . selected_php_version() . '-fpm'; }
+function php_bin($v) { return is_alpine() ? '/usr/bin/php' . str_replace('.', '', $v) : (is_rhel() ? '/usr/bin/php' : '/usr/bin/php' . $v); }
+function php_fpm_svc() { return is_alpine() ? 'php-fpm' . alpine_php_sfx() : (is_rhel() ? 'php-fpm' : 'php' . selected_php_version() . '-fpm'); }
 // P1：Alpine 新装 PHP-FPM 的 socket 自动初始化（目录+listen+属主）
 function alpine_fix_fpm_sock(string $ver): void {
     if (!is_alpine()) return;
@@ -719,6 +724,7 @@ function svc_status($name) {
 }
 function pkg_installed($pkg) {
     if (is_alpine()) { $o = cmd("apk info -e $pkg 2>/dev/null"); return trim($o ?? '') === $pkg || trim($o ?? '') === 'true'; }
+    if (is_rhel()) { $o = cmd("rpm -q $pkg 2>/dev/null"); return stripos($o ?? '', 'not installed') === false && !empty(trim($o ?? '')); }
     $o = cmd("dpkg -l $pkg 2>/dev/null | grep '^ii'"); return !empty(trim($o ?? ''));
 }
 function disk_free() { return round(disk_free_space('/') / 1073741824, 1); }
@@ -2970,14 +2976,16 @@ $sites_by_cfg = [];
 foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
     $cfg_name = basename($f);
     if ($cfg_name === 'default') continue;
-    $enabled = is_link(NGINX_ENABLED . "/$cfg_name") || file_exists(NGINX_ENABLED . "/$cfg_name");
     $cfg = file_get_contents($f);
+    if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段（php-fpm.conf 等）非 server 块
+    $enabled = is_link(NGINX_ENABLED . "/$cfg_name") || file_exists(NGINX_ENABLED . "/$cfg_name");
     
     // Extract primary domain from server_name
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
     $server_names = $sn[1] ?? $cfg_name;
     $domains = preg_split('/\s+/', trim($server_names));
     $domain = $domains[0];
+    if ($domain === '_' || $domain === '' || !str_contains($domain, '.')) continue; // 排除反代/兜底 server（vps-manager.conf）
     
     // Extract document root
     preg_match('/root\s+([^;]+);/', $cfg, $rm);
@@ -3186,7 +3194,7 @@ if ($page === 'dashboard'):
   <div class="service-card">
     <div class="svc-icon">🗄️</div>
     <div class="svc-name">MySQL / MariaDB</div>
-    <div class="svc-status"><span class="badge <?= $mysql_ok?'badge-ok':'badge-err' ?>"><?= $mysql_ok?'运行中':'已停止' ?></span></div>
+    <div class="svc-status"><span class="badge <?= $mysql_ok?'badge-ok':'badge-err' ?>"><?= $mysql_ok?'运行中':(is_mysql_available()?'已停止':'未安装（SQLite 模式）') ?></span></div>
     <?php if($mysql_ok): ?><span style="font-size:12px;color:var(--text2)"><?= $mysql_ok ? trim(cmd(mysql_cli("-V 2>/dev/null | head -1"))) : "SQLite 模式（MySQL 未安装）" ?></span><?php endif; ?>
   </div>
   <div class="service-card">
@@ -3577,7 +3585,7 @@ elseif ($page === 'services'):
   <div class="service-card">
     <div class="svc-icon">🌐</div>
     <div class="svc-name">Nginx Web Server</div>
-    <small style="color:var(--text2);display:block;margin-bottom:8px">v1.18+ | Reverse proxy & static files</small>
+    <small style="color:var(--text2);display:block;margin-bottom:8px"><?= sanitize(trim(cmd('nginx -v 2>&1') ?: 'nginx')) ?: 'Reverse proxy & static files' ?></small>
     <?php if($nginx_installed): ?>
       <div class="svc-status"><span class="badge <?= $nginx_ok?'badge-ok':'badge-err' ?>"><?= $nginx_ok?'🟢 Running':'🔴 Stopped' ?></span></div>
       <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
@@ -3595,8 +3603,8 @@ elseif ($page === 'services'):
   <!-- PHP -->
   <div class="service-card">
     <div class="svc-icon">🐘</div>
-    <div class="svc-name">PHP 8.1-FPM</div>
-    <small style="color:var(--text2);display:block;margin-bottom:8px">mysql, curl, gd, mbstring, xml, zip, intl</small>
+    <div class="svc-name">PHP <?= selected_php_version() ?>-FPM</div>
+    <small style="color:var(--text2);display:block;margin-bottom:8px">curl, gd, mbstring, xml, zip, intl（扩展可在 PHP 页管理）</small>
     <?php if($php_installed): ?>
       <div class="svc-status"><span class="badge <?= $php_ok?'badge-ok':'badge-err' ?>"><?= $php_ok?'🟢 Running':'🔴 Stopped' ?></span></div>
       <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
@@ -3660,12 +3668,21 @@ elseif ($page === 'services'):
 elseif ($page === 'php'):
   $all_versions = ['8.2','8.3','8.4','8.5'];
   $installed = [];
+  if (is_rhel()) {
+    // RHEL 系：默认只装一个无版本号 PHP（/usr/bin/php），按实际 CLI 版本报告
+    $rv = trim(cmd("php -r 'echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;' 2>/dev/null") ?: '');
+    if (in_array($rv, $all_versions, true)) {
+      $ext_count = count(explode("\n", trim(cmd("php -m 2>/dev/null") ?: '')));
+      $installed[$rv] = ['fpm' => svc_status('php-fpm'), 'extensions' => $ext_count];
+    }
+  } else {
   foreach ($all_versions as $v) {
     if (file_exists(php_bin($v))) {
       $fpm_ok = svc_status(is_alpine() ? 'php-fpm' . str_replace('.', '', $v) : "php$v-fpm");
       $ext_count = count(explode("\n", trim(cmd(escapeshellarg(php_bin($v)) . " -m 2>/dev/null") ?: '')));
       $installed[$v] = ['fpm' => $fpm_ok, 'extensions' => $ext_count];
     }
+  }
   }
   $default_cli = trim(cmd("php -r 'echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;' 2>/dev/null") ?: '?');
 ?>
@@ -4431,7 +4448,7 @@ elseif ($page === 'settings'):
     <tr><td style="color:var(--text2)">密码存储</td><td><code style="font-size:12px"><?= $pw_set ? '✅ .passwd exists' : '❌ Not set (using default)' ?></code></td></tr>
     <tr><td style="color:var(--text2)">PHP 版本</td><td><?= phpversion() ?></td></tr>
     <tr><td style="color:var(--text2)">备份</td><td><code style="font-size:12px"><?= BACKUP_DIR ?>/</code></td></tr>
-    <tr><td style="color:var(--text2)">GitHub</td><td><a href="https://github.com/panelboss/vps-manager" target="_blank">panelboss/vps-manager</a></td></tr>
+    <tr><td style="color:var(--text2)">GitHub</td><td><a href="https://github.com/mnbwc/vps-manager" target="_blank">mnbwc/vps-manager</a></td></tr>
   </table>
 </div>
 
@@ -5009,7 +5026,7 @@ elseif ($page === 'uptime'):
   foreach ($sites as $dm => $s) {
     $url = ($s['ssl'] ? 'https' : 'http') . '://' . $dm;
     $ch = curl_init($url);
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5, CURLOPT_NOBODY => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_SSL_VERIFYPEER => false]);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 3, CURLOPT_CONNECTTIMEOUT => 2, CURLOPT_NOBODY => true, CURLOPT_FOLLOWLOCATION => true, CURLOPT_SSL_VERIFYPEER => false]);
     $start = microtime(true);
     curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -5596,12 +5613,22 @@ elseif ($page === 'terminal'):
 <div class="card">
   <h2>💻 网页终端</h2>
   <p style="color:#888;margin-bottom:16px">浏览器内完整终端。输入 <code>exit</code> 关闭，<code>Ctrl+C</code> 中断。</p>
+  <?php $ttyd_ok = (bool)cmd("ss -tln 2>/dev/null | grep -q ':8081' && echo ok", false); ?>
+  <?php if ($ttyd_ok): ?>
   <div style="border:2px solid #1e3a5f;border-radius:12px;overflow:hidden;background:#1a1a2e">
     <iframe id="terminal-frame" style="width:100%;height:520px;border:0" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
   </div>
   <script>
-  document.getElementById("terminal-frame").src = "http://" + location.hostname + ":8081";
+  document.getElementById("terminal-frame").src = (location.protocol === "https:" ? "https://" : "http://") + location.hostname + ":8081";
   </script>
+  <?php else: ?>
+  <div style="background:var(--card2, #f6f2ea);border:2px dashed var(--text2);border-radius:12px;padding:32px;text-align:center;color:var(--text2)">
+    <p style="font-size:15px;margin-bottom:8px">⚠️ 网页终端服务（ttyd, 端口 8081）未运行</p>
+    <p style="font-size:13px">安装：<code>apt/dnf/apk install ttyd && ttyd -p 8081 bash</code><br>
+    NAT 环境还需把宿主端口映射到 8081，并放行防火墙。</p>
+    <p style="font-size:12px;margin-top:8px">也可以直接用 SSH 客户端连接服务器操作。</p>
+  </div>
+  <?php endif; ?>
 </div>
 <?php
 elseif ($page === 'dns'):
