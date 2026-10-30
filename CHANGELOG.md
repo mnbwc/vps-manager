@@ -5,6 +5,14 @@
 - nginx 加入开机自启（`systemctl enable --now` / Alpine `rc-update add`）——此前仅 start，机器重启后 nginx 不自起导致面板反代失效
 - 登录节流键改用 `client_ip()`：nginx 反代后 `REMOTE_ADDR` 恒为 127.0.0.1，原实现会让所有访问者共享同一节流桶（一次爆破锁定可 DoS 全站）；现优先取 nginx 传递的 `X-Real-IP`（仅本机反代可设置，无伪造面）。
 - 登录页验证码点击刷新由未定义的 `__cap()` 回退改为直接 `location.reload()`。
+### 修复（RHEL 兼容补丁 + 状态显示）
+- 新增 `is_rhel()` 判定；`pkg_installed` RHEL 用 `rpm -q`（原 dpkg 仅 Debian）、`svc_status`/`php_fpm_svc` RHEL 服务名 `php-fpm`、`php_bin` RHEL 无版本号二进制——修复 dashboard「PHP-FPM 已停止」、services 页「Not Installed」、PHP 页「尚未安装任何版本」
+- services 页 PHP 版本名/扩展列表动态化（原硬编码 PHP 8.1）；Nginx 版本号动态显示（原硬编码 v1.18+）
+- sites 列表解析跳过非 server 块 conf（php-fpm.conf）与反代兜底 server（server_name _）——修复 uptime 页因对无效域名探测超时导致的 20 秒白屏（现 0.5s）；uptime 探测超时收紧为 3s/连接 2s
+- dashboard MySQL 卡状态区分「未安装（SQLite 模式）」与「已停止」
+- terminal 页检测 ttyd(8081) 是否运行，未运行给出安装指引而非空白 iframe；iframe 协议自适应 https
+- settings 页 GitHub 链接改为 mnbwc/vps-manager
+
 ### 已知限制
 - SVG 验证码基于 `<text>` 节点，对简单 OCR 防御能力有限；主力防线仍为一次性+短过期+失败节流。如需强 OCR 防御可后续换 hCaptcha/Turnstile。
 ## 2026-10-28 修复优化施工单（基线 index_7f7997.php，md5 3d5e283e）
