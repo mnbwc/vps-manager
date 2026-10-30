@@ -2758,11 +2758,13 @@ SV;
         // Re-gather sites here
         $_sites = [];
         foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-            $cn = preg_replace('/\.conf$/', '', basename($f)); if ($cn === 'default') continue;
-            $cfg = file_get_contents($f);
+            $cn = preg_replace('/\.conf$/', '', basename($f)); if ($cn === 'default' || strpos($cn, '.bak.') !== false) continue;
+            $cfg = @file_get_contents($f) ?: '';
+            if (strpos($cfg, 'server {') === false) continue;
             preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
-            $dms = preg_split('/\s+/', trim($sn[1] ?? $cn));
-            $dm = $dms[0];
+            $dms = preg_split('/\s+/', trim($sn[1] ?? ''));
+            $dm = $dms[0] ?? '';
+            if ($dm === '' || $dm === '_' || strpos($dm, '.') === false || strpos($cfg, 'proxy_pass http://127.0.0.1:9001') !== false) continue;
             $_sites[$dm] = ['domain' => $dm, 'ssl' => strpos($cfg, 'ssl_certificate') !== false];
         }
         $up = 0; $total = count($_sites);
@@ -3097,7 +3099,7 @@ foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
     $cfg = @file_get_contents($f) ?: '';
     if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段（php-fpm.conf 等）非 server 块
     $cfg_name = preg_replace('/\.conf$/', '', basename($f));
-    if ($cfg_name === 'default') continue;
+    if ($cfg_name === 'default' || strpos($cfg_name, '.bak.') !== false) continue;
     $enabled = is_link(cfg_path($cfg_name, 'enabled')) || file_exists(cfg_path($cfg_name, 'enabled'));
     
     // Extract primary domain from server_name
@@ -3949,12 +3951,13 @@ elseif ($page === 'php'):
   // Scan all nginx configs for PHP socket version
   $site_php = [];
   foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-    $cfg = file_get_contents($f);
+    $cfg = @file_get_contents($f) ?: '';
     if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段
     $cfg_name = preg_replace('/\.conf$/', '', basename($f));
-    if ($cfg_name === 'default') continue;
+    if ($cfg_name === 'default' || strpos($cfg_name, '.bak.') !== false) continue;
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
-    $domain = trim(explode(' ', $sn[1] ?? $cfg_name)[0]);
+    $domain = trim(explode(' ', $sn[1] ?? '')[0] ?? '');
+    if ($domain === '_' || strpos($domain, '.') === false || strpos($cfg, 'proxy_pass http://127.0.0.1:9001') !== false) continue;
     if ($domain === '_' || !str_contains($domain, '.')) continue; // 反代/兜底 server
     preg_match('/unix:(?:\/var\/run\/php\/php([\d.]+)-fpm\.sock|\/run\/php-fpm(\d+)\/php-fpm\.sock)/', $cfg, $phpm);
     if (isset($phpm[2])) { $php_ver = $phpm[2][0] . '.' . substr($phpm[2], 1); } else { $php_ver = $phpm[1] ?? '?'; }
@@ -3993,12 +3996,16 @@ elseif ($page === 'ssl'):
   // Get SSL status for each site
   $ssl_sites = [];
   foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
+    if (is_link($f) && strpos((string)@readlink($f), $f) !== false) continue;
     $cfg_name = preg_replace('/\.conf$/', '', basename($f));
-    if ($cfg_name === 'default') continue;
-    $cfg = file_get_contents($f);
+    if ($cfg_name === 'default' || strpos($cfg_name, '.bak.') !== false) continue; // 备份与 default 排除
+    $cfg = @file_get_contents($f);
+    if ($cfg === false || strpos($cfg, 'server {') === false || strpos($cfg, 'server_name') === false) continue; // 非 server 块 conf（php-fpm.conf 等）
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
-    $domains = preg_split('/\s+/', trim($sn[1] ?? $cfg_name));
-    $domain = $domains[0];
+    $domains = preg_split('/\s+/', trim($sn[1] ?? ''));
+    $domain = $domains[0] ?? '';
+    if ($domain === '' || $domain === '_' || strpos($domain, '.') === false || strpos($domain, 'vps-manager') !== false) continue; // 面板 conf/默认/无点域名
+    if (strpos($cfg, 'proxy_pass http://127.0.0.1:9001') !== false) continue; // 面板反代 conf
     $has_ssl = strpos($cfg, 'ssl_certificate') !== false;
     $cert_path = '/etc/letsencrypt/live/' . $domain;
     $cert_exists = is_dir($cert_path);
