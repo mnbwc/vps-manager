@@ -243,6 +243,20 @@ function active_php_fpm() {
     $o = trim(cmd('php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;" 2>/dev/null'));
     return $o ?: '8.3';
 }
+    // ===== NODE.JS 支持 =====
+function node_sites_file(): string { return '/var/www/manager/.node_sites.json'; }
+function node_sites_all(): array {
+    if (!is_file(node_sites_file())) return [];
+    $d = json_decode(file_get_contents(node_sites_file()), true);
+    return is_array($d) ? $d : [];
+}
+function node_sites_save(array $d): void {
+    file_put_contents(node_sites_file(), json_encode($d, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE));
+    @chmod(node_sites_file(), 0600);
+}
+function node_installed(): bool { return is_executable('/usr/bin/node') || is_executable('/usr/local/bin/node'); }
+function node_version(): string { return trim(cmd('node -v 2>/dev/null') ?: ''); }
+
 function enforce_single_admin() {
     // T-02：每请求校验登录会话对应库中唯一 admin（旧 session / role=user 残留一律作废）
     if (empty($_SESSION['auth'])) return;
@@ -1137,21 +1151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // --- INSTALL SERVICE ---
 
-    // ===== NODE.JS 支持 =====
-    function node_sites_file(): string { return '/var/www/manager/.node_sites.json'; }
-    function node_sites_all(): array {
-        if (!is_file(node_sites_file())) return [];
-        $d = json_decode(file_get_contents(node_sites_file()), true);
-        return is_array($d) ? $d : [];
-    }
-    function node_sites_save(array $d): void {
-        file_put_contents(node_sites_file(), json_encode($d, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE));
-        @chmod(node_sites_file(), 0600);
-    }
-    function node_installed(): bool { return is_executable('/usr/bin/node') || is_executable('/usr/local/bin/node'); }
-    function node_version(): string { return trim(cmd('node -v 2>/dev/null') ?: ''); }
-
-    if ($act === 'node_install') {
+if ($act === 'node_install') {
         if (node_installed()) { flash('Node.js 已安装（' . node_version() . '）', 'err'); redirect('node'); }
         if (is_alpine()) {
             cmd('apk update 2>&1 && apk add nodejs npm 2>&1');
