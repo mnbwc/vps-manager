@@ -733,7 +733,12 @@ function confirm_attr(string $msg): string {
     return 'onsubmit="return confirm(' . js_str($msg) . ')"';
 }
 function sanitize($s) { return htmlspecialchars($s ?? '', ENT_QUOTES, 'UTF-8'); }
-function flash_html($s) { $s = strip_tags($s, '<b><i><code><small><br><pre><span><details><summary><strong><em>'); return preg_replace('/<([a-z][a-z0-9]*)\b[^>]*>/i', '<$1>', $s); }
+function flash_html($s) {
+    // 加固（渗透审计 #4）：先整体 HTML 转义再恢复白名单标签——尖括号/引号/&,<,> 一律不再裸输出
+    $s = htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $s = preg_replace('/&lt;(\/?)(b|i|em|strong|code|small|span|br|pre|details|summary)\s*&gt;/i', '<$1$2>', $s);
+    return $s;
+}
 function flash($m, $t = 'ok') { $_SESSION['flash'] = ['msg' => $m, 'type' => $t]; }
 function get_flash() { $f = $_SESSION['flash'] ?? null; unset($_SESSION['flash']); return $f; }
 function redirect($p = '') { header('Location: ?page=' . $p); exit; }
@@ -1896,7 +1901,7 @@ SV;
     // --- PANEL SELF HTTPS (self-signed) ---
     if ($act === 'panel_https_toggle') {
         $mode = in_array($_POST['pmode'] ?? '', ['on','redirect','off'], true) ? $_POST['pmode'] : 'off';
-        $panel_conf = is_alpine() ? '/etc/nginx/http.d/vps-manager.conf' : '/etc/nginx/sites-available/vps-manager';
+        $panel_conf = is_alpine() ? '/etc/nginx/http.d/vps-manager.conf' : (is_rhel() ? '/etc/nginx/conf.d/vps-manager.conf' : '/etc/nginx/sites-available/vps-manager');
         if (!file_exists($panel_conf)) { flash('❌ 未找到面板 nginx 配置', 'err'); redirect('ssl'); }
         $cert_dir = '/etc/nginx/ssl/panel';
         $cert = "$cert_dir/panel.crt"; $key = "$cert_dir/panel.key";
@@ -1904,19 +1909,31 @@ SV;
             if (!is_dir($cert_dir)) mkdir($cert_dir, 0755, true);
             if (!file_exists($cert) || !file_exists($key)) {
                 $cn = trim(cmd("hostname -f 2>/dev/null || hostname"));
+                // SAN 收集本机所有 IPv4/IPv6，浏览器按 IP 访问时不至于完全失配
+                $ips = [];
+                foreach (['-4','-6'] as $fam) {
+                    foreach (explode("\n", trim((string)cmd("hostname $fam -I 2>/dev/null"))) as $l) {
+                        foreach (preg_split('/\s+/', trim($l)) as $ip) {
+                            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) { $ips[$ip] = true; }
+                        }
+                    }
+                }
+                $sans = ''; $i = 1;
+                foreach (array_keys($ips) as $ip) { $sans .= ($i > 1 ? ',' : '') . (str_contains($ip, ':') ? "IP:$ip" : "IP:$ip"); $i++; }
+                $ext = $sans !== '' ? "-addext \"subjectAltName=$sans\"" : '';
                 $r = cmd("openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes " .
                          "-keyout " . escapeshellarg($key) . " -out " . escapeshellarg($cert) . " " .
-                         "-subj " . escapeshellarg("/CN=" . ($cn ?: 'vps-manager')) . " 2>&1");
+                         "-subj " . escapeshellarg("/CN=" . ($cn ?: 'vps-manager')) . " $ext 2>&1");
                 chmod($key, 0600);
                 if (!file_exists($cert)) { flash('❌ 自签证书生成失败: ' . sanitize(substr($r, 0, 200)), 'err'); redirect('ssl'); }
             }
             $listen = $mode === 'redirect' ? "listen 8080;\n" : "listen 8080 ssl;\n";
             $sock = is_alpine()
                 ? '/run/php-fpm' . str_replace('.','',selected_php_version()) . '/php-fpm.sock'
-                : '/var/run/php/php' . selected_php_version() . '-fpm.sock';
-            $fastcgi = is_alpine()
-                ? "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;"
-                : "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;";
+                : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . selected_php_version() . '-fpm.sock');
+            $fastcgi = (!is_alpine() && !is_rhel())
+                ? "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;"
+                : "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;";
             $conf = "server {
     $listen    server_name _;
     root /var/www/manager;
@@ -1955,10 +1972,10 @@ $fastcgi
             // 还原纯 HTTP
             $sock = is_alpine()
                 ? '/run/php-fpm' . str_replace('.','',selected_php_version()) . '/php-fpm.sock'
-                : '/var/run/php/php' . selected_php_version() . '-fpm.sock';
-            $fastcgi = is_alpine()
-                ? "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;"
-                : "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;";
+                : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . selected_php_version() . '-fpm.sock');
+            $fastcgi = (!is_alpine() && !is_rhel())
+                ? "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;"
+                : "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;";
             $conf = "server {
     listen 8080;
     server_name _;
@@ -4043,7 +4060,7 @@ elseif ($page === 'ssl'):
 <div class="card">
   <h3>🛡️ 面板自身 HTTPS（自签证书）</h3>
   <p style="color:var(--text2);font-size:13px">为面板本身启用 HTTPS。自签证书 10 年有效，浏览器首次访问需手动信任（点"高级→继续前往"）。加密强度与正规证书相同。</p>
-  <?php $pcf = is_alpine() ? '/etc/nginx/http.d/vps-manager.conf' : '/etc/nginx/sites-available/vps-manager';
+  <?php $pcf = is_alpine() ? '/etc/nginx/http.d/vps-manager.conf' : (is_rhel() ? '/etc/nginx/conf.d/vps-manager.conf' : '/etc/nginx/sites-available/vps-manager');
   $panel_https = is_file($pcf) && strpos(file_get_contents($pcf), 'ssl_certificate') !== false; ?>
   <?php if ($panel_https): ?>
     <p style="color:#4ade80;font-size:13px">✅ 当前已启用 HTTPS（证书：/etc/nginx/ssl/panel/）</p>
