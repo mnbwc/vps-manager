@@ -320,6 +320,7 @@ if (isset($_GET['php_ext_scan'])) { if (!current_user()) { http_response_code(40
     $out = [];
     foreach (['8.2','8.3','8.4','8.5'] as $v) {
         $bin = php_bin($v);
+        if (is_rhel() && $v !== trim(cmd("php -r 'echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;' 2>/dev/null") ?: '')) continue; // RHEL 单二进制：只报实际 CLI 版本
         if (!is_executable($bin)) continue; // 审计修复：未安装版本跳过（php_bin 恒返回非空）
         $mods = explode("\n", trim(cmd(escapeshellarg($bin) . " -m 2>/dev/null") ?: ''));
         $mods = array_map('trim', $mods);
@@ -3771,8 +3772,10 @@ elseif ($page === 'php'):
     $cfg_name = basename($f);
     if ($cfg_name === 'default') continue;
     $cfg = file_get_contents($f);
+    if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
     $domain = trim(explode(' ', $sn[1] ?? $cfg_name)[0]);
+    if ($domain === '_' || !str_contains($domain, '.')) continue; // 反代/兜底 server
     preg_match('/unix:(?:\/var\/run\/php\/php([\d.]+)-fpm\.sock|\/run\/php-fpm(\d+)\/php-fpm\.sock)/', $cfg, $phpm);
     if (isset($phpm[2])) { $php_ver = $phpm[2][0] . '.' . substr($phpm[2], 1); } else { $php_ver = $phpm[1] ?? '?'; }
     $site_php[] = ['domain' => $domain, 'php' => $php_ver, 'cfg_name' => $cfg_name];
