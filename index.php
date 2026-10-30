@@ -1907,6 +1907,7 @@ SV;
         if (!file_exists($panel_conf)) { flash('❌ 未找到面板 nginx 配置', 'err'); redirect('ssl'); }
         $cert_dir = '/etc/nginx/ssl/panel';
         $cert = "$cert_dir/panel.crt"; $key = "$cert_dir/panel.key";
+        $proxy = "    location / {\n        proxy_pass http://127.0.0.1:9001;\n        proxy_set_header Host \$host;\n        proxy_set_header X-Real-IP \$remote_addr;\n        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n        client_max_body_size 100M;\n    }\n";
         if ($mode !== 'off') {
             if (!is_dir($cert_dir)) mkdir($cert_dir, 0755, true);
             if (!file_exists($cert) || !file_exists($key)) {
@@ -1920,8 +1921,8 @@ SV;
                         }
                     }
                 }
-                $sans = ''; $i = 1;
-                foreach (array_keys($ips) as $ip) { $sans .= ($i > 1 ? ',' : '') . (str_contains($ip, ':') ? "IP:$ip" : "IP:$ip"); $i++; }
+                $sans = ''; $n = 1;
+                foreach (array_keys($ips) as $ip) { $sans .= ($n > 1 ? ',' : '') . "IP:$ip"; $n++; }
                 $ext = $sans !== '' ? "-addext \"subjectAltName=$sans\"" : '';
                 $r = cmd("openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes " .
                          "-keyout " . escapeshellarg($key) . " -out " . escapeshellarg($cert) . " " .
@@ -1929,33 +1930,12 @@ SV;
                 chmod($key, 0600);
                 if (!file_exists($cert)) { flash('❌ 自签证书生成失败: ' . sanitize(substr($r, 0, 200)), 'err'); redirect('ssl'); }
             }
-            $listen = $mode === 'redirect' ? "listen 8080;\n" : "listen 8080 ssl;\n";
-            $sock = is_alpine()
-                ? '/run/php-fpm' . str_replace('.','',selected_php_version()) . '/php-fpm.sock'
-                : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . selected_php_version() . '-fpm.sock');
-            $fastcgi = (!is_alpine() && !is_rhel())
-                ? "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;"
-                : "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;";
-            $conf = "server {
-    $listen    server_name _;
-    root /var/www/manager;
-    index index.php index.html;
-    ssl_certificate $cert;
-    ssl_certificate_key $key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
-    location ~ \\.php\$ {
-$fastcgi
-    }
-    location ~ /\\. { deny all; }
-    location ^~ /backups/ { deny all; }
-    client_max_body_size 100M;
-}
-";
+            // 保持「root php -S 9001 + nginx 反代」架构（仅 root 模型，T07b）——HTTPS 只改 listen 层，绝不经 fpm
+            $tls = "    ssl_certificate $cert;\n    ssl_certificate_key $key;\n    ssl_protocols TLSv1.2 TLSv1.3;\n";
             if ($mode === 'redirect') {
-                $conf = str_replace($listen, "listen 8080;\n", $conf);
-                // 8080 跳转 + 8443 HTTPS
-                $conf = str_replace('listen 8080;', "listen 8080;\n    return 301 https://\$host:8443\$request_uri;\n}\nserver {\n    listen 8443 ssl;", $conf);
+                $conf = "server {\n    listen 8080;\n    server_name _;\n    return 301 https:\$host:8443\$request_uri;\n}\nserver {\n    listen 8443 ssl;\n    server_name _;\n$tls$proxy}\n";
+            } else {
+                $conf = "server {\n    listen 8080 ssl;\n    server_name _;\n$tls$proxy}\n";
             }
             $bak = $panel_conf . '.bak.' . time();
             copy($panel_conf, $bak);
@@ -1968,39 +1948,21 @@ $fastcgi
                 cmd(is_alpine() ? 'rc-service nginx reload' : 'systemctl reload nginx');
                 flash($mode === 'redirect'
                     ? '✅ 面板 HTTPS 已开启（8080 → 强制跳转 <b>https://IP:8443</b>）'
-                    : '✅ 面板 HTTPS 已开启：<b>https://IP:8080</b>（自签证书，首次访问请信任）');
+                    : '✅ 面板 HTTPS 已开启：<b>https://IP:8080</b>（自签证书，浏览器需信任）');
             }
         } else {
-            // 还原纯 HTTP
-            $sock = is_alpine()
-                ? '/run/php-fpm' . str_replace('.','',selected_php_version()) . '/php-fpm.sock'
-                : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . selected_php_version() . '-fpm.sock');
-            $fastcgi = (!is_alpine() && !is_rhel())
-                ? "        include snippets/fastcgi-php.conf;\n        fastcgi_pass unix:$sock;"
-                : "        include fastcgi_params;\n        fastcgi_index index.php;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        fastcgi_pass unix:$sock;";
-            $conf = "server {
-    listen 8080;
-    server_name _;
-    root /var/www/manager;
-    index index.php index.html;
-    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
-    location ~ \\.php\$ {
-$fastcgi
-    }
-    location ~ /\\. { deny all; }
-    location ^~ /backups/ { deny all; }
-    client_max_body_size 100M;
-}
-";
+            $conf = "server {\n    listen 8080;\n    server_name _;\n$proxy}\n";
+            $bak = $panel_conf . '.bak.' . time();
+            copy($panel_conf, $bak);
             file_put_contents($panel_conf, $conf);
-            $test = cmd('nginx -t 2>&1');
-            if (strpos($test, 'successful') === false) flash('❌ 还原失败，请手动检查 ' . $panel_conf, 'err');
-            else { cmd(is_alpine() ? 'rc-service nginx reload' : 'systemctl reload nginx'); flash('✅ 面板已还原为 HTTP 模式'); }
+            if (strpos(cmd('nginx -t 2>&1'), 'successful') !== false) {
+                cmd(is_alpine() ? 'rc-service nginx reload' : 'systemctl reload nginx');
+                flash('✅ 已关闭面板 HTTPS，还原 HTTP');
+            } else { copy($bak, $panel_conf); flash('❌ Nginx 配置错误！已回滚。', 'err'); }
         }
         redirect('ssl');
     }
 
-    // --- REVERSE PROXY ---
     if ($act === 'proxy_add') {
         $domain = trim($_POST['pdomain'] ?? '');
         $upstream = trim($_POST['pupstream'] ?? '');
