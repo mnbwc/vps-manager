@@ -1,5 +1,7 @@
 ## [3.1] 2026-10-29
 ### 新增
+- Node.js 支持（v3.1）：`?page=node` 可视化管理。Node.js 默认不安装、面板内一键可选安装（NodeSource 20 LTS / RHEL dnf / Alpine apk）；Node 站点创建（域名+端口+入口文件，自动生成模板 app.js/package.json、systemd|OpenRC 守护 vpsmgr-node-<域名> 崩溃自动重启、nginx 反代含 WebSocket 升级头）；运行状态/Start/Stop/Restart/npm install/npm build/删除（整目录）；机密清单 .node_sites.json（0600）。RHEL conf.d 站点配置文件名统一加 .conf 后缀（cfg_path helper，修复 conf.d include 不加载无后缀文件的问题），所有站点解析处 basename 去 .conf 兼容。
+### 新增
 - 登录页验证码：免 GD 依赖的 SVG 扭曲字符验证码（5 位、随机旋转/干扰线/干扰点），一次性使用（用后即毁）、300 秒过期、`hash_equals` 恒时比较、大小写不敏感；验证码错误也计入登录失败节流（5 次/15 分钟）。
 ### 修复
 - nginx 加入开机自启（`systemctl enable --now` / Alpine `rc-update add`）——此前仅 start，机器重启后 nginx 不自起导致面板反代失效
