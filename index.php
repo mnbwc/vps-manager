@@ -27,6 +27,12 @@ if (is_rhel()) {
 define('WWW_ROOT', '/var/www');
 
 // RHEL 系 NGINX_AVAILABLE == NGINX_ENABLED（/etc/nginx/conf.d），软链自指会产生 E_LOOP
+// RHEL conf.d 要求 .conf 后缀：站点配置文件名统一走此 helper
+function cfg_filename(string $domain): string { return is_rhel() ? $domain . '.conf' : $domain; }
+function cfg_path(string $domain, string $which = 'available'): string {
+    $base = $which === 'enabled' ? NGINX_ENABLED : NGINX_AVAILABLE;
+    return $base . '/' . cfg_filename($domain);
+}
 function priv_nginx_link_site(string $src, string $dst): void {
     if (realpath(dirname($src)) === realpath(dirname($dst))) return; // RHEL conf.d 单目录：无需软链
     @symlink($src, $dst);
@@ -734,7 +740,7 @@ function disk_total() { return round(disk_total_space('/') / 1073741824, 1); }
 // ===== ACTIONS =====
 $msg = null;
 
-$KNOWN_ACTS = ['add_redirect','api_token_gen','api_token_revoke','backup_site','cache_toggle_site','change_pass','cleanup_run','clear_uptime','cloud_backup','cloud_target_save','create_db','create_site','cron_add','cron_del','delete_backup','delete_db','delete_folder','delete_redirect','delete_site','dns_add','dns_del','docker_ctl','docker_install','edit_conf','fw_add','fw_del','fw_toggle','install_all','install_certbot','install_f2b','install_rclone','install_svc','logout','migration_backup','migration_delete','migration_restore','new_folder','notify_save','optimize','panel_https_toggle','php_default','php_ext_toggle','php_install','php_per_site_save','php_remove','php_switch_site','proc_action','proc_add','proc_del','proxy_add','proxy_del','purge_cache','rclone_gdrive_step1','rclone_gdrive_step2','rclone_mega_connect','rclone_remove','restore_site','site_db_bind','site_db_unbind','ssl_autorenew','ssl_install','ssl_renew','ssl_wildcard','svc_action','unban_ip','upload_file','uptime_check','save_rewrite'];
+$KNOWN_ACTS = ['node_install','node_site_add','node_site_del','node_app_action','add_redirect','api_token_gen','api_token_revoke','backup_site','cache_toggle_site','change_pass','cleanup_run','clear_uptime','cloud_backup','cloud_target_save','create_db','create_site','cron_add','cron_del','delete_backup','delete_db','delete_folder','delete_redirect','delete_site','dns_add','dns_del','docker_ctl','docker_install','edit_conf','fw_add','fw_del','fw_toggle','install_all','install_certbot','install_f2b','install_rclone','install_svc','logout','migration_backup','migration_delete','migration_restore','new_folder','notify_save','optimize','panel_https_toggle','php_default','php_ext_toggle','php_install','php_per_site_save','php_remove','php_switch_site','proc_action','proc_add','proc_del','proxy_add','proxy_del','purge_cache','rclone_gdrive_step1','rclone_gdrive_step2','rclone_mega_connect','rclone_remove','restore_site','site_db_bind','site_db_unbind','ssl_autorenew','ssl_install','ssl_renew','ssl_wildcard','svc_action','unban_ip','upload_file','uptime_check','save_rewrite'];
 $act = $_POST['action'] ?? '';
 
 // T07b：本版本仅支持 PHP-FPM 以 root 运行
@@ -746,7 +752,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($act !== '' && $act !== 'logout' && !in_array($act, $KNOWN_ACTS, true)) { http_response_code(400); exit('未知操作'); }
 
     // 高危操作仅管理员（admin 角色门）
-    $ADMIN_ONLY_ACTS = ['site_db_bind','site_db_unbind','php_remove','php_install','php_default','php_ext_toggle','php_switch_site','proc_add','proc_del','proc_action',
+    $ADMIN_ONLY_ACTS = ['node_install','node_site_add','node_site_del','node_app_action','site_db_bind','site_db_unbind','php_remove','php_install','php_default','php_ext_toggle','php_switch_site','proc_add','proc_del','proc_action',
         'cleanup_run','edit_conf','edit_file','delete_file','new_folder','upload_file','migration_restore','migration_backup','migration_delete','panel_https_toggle',
         'proxy_add','proxy_del','cloud_target_save','api_token_gen','api_token_revoke','docker_install','install_svc','install_rclone',
         'fw_toggle','fw_add','fw_del','install_f2b','svc_action','delete_site','ssl_install','ssl_wildcard','restore_site','rclone_remove','unban_ip','cron_add','cron_del','save_rewrite'];
@@ -770,7 +776,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // T19：create_site 不得覆盖——已有 nginx 配置或站点目录时报错退出
-        if (is_link(NGINX_ENABLED . '/' . $domain) || file_exists(NGINX_ENABLED . '/' . $domain) || file_exists(NGINX_AVAILABLE . '/' . $domain)) { flash('❌ 站点 ' . $domain . ' 的 nginx 配置已存在（如需重建请先删除）', 'err'); redirect('websites'); }
+        if (is_link(cfg_path($domain, 'enabled')) || file_exists(cfg_path($domain, 'enabled')) || file_exists(cfg_path($domain))) { flash('❌ 站点 ' . $domain . ' 的 nginx 配置已存在（如需重建请先删除）', 'err'); redirect('websites'); }
         if (is_dir(WWW_ROOT . '/' . $domain)) { flash('❌ 目录 ' . WWW_ROOT . '/' . $domain . ' 已存在——如需接管请先删除', 'err'); redirect('websites'); }
 
         $root = WWW_ROOT . '/' . $domain;
@@ -793,10 +799,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nginx_conf = "server {\n    listen 80;\n    server_name $domain www.$domain;\n    root $root;\n    index index.php index.html index.htm;\n\n    client_max_body_size 100M;\n\n    location / {\n        try_files \$uri \$uri/ /index.php?\$query_string;\n    }\n\n    location ~ \\.php\$ {\n        $fastcgi_inc\n        fastcgi_pass unix:$fpm_sock;\n        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;\n        include fastcgi_params;\n    }\n\n    location ~ /\\. { deny all; }\n    gzip on;\n    gzip_types text/css application/javascript;\n    gzip_min_length 256;\n}\n";
         $ntmp = tempnam('/tmp', 'ngx_cs_'); chmod($ntmp, 0600);
         file_put_contents($ntmp, $nginx_conf);
-        priv_apply_file($ntmp, NGINX_AVAILABLE . "/$domain");
-        priv_nginx_link_site(NGINX_AVAILABLE . "/$domain", NGINX_ENABLED . "/$domain");
+        priv_apply_file($ntmp, cfg_path($domain));
+        priv_nginx_link_site(cfg_path($domain), cfg_path($domain, 'enabled'));
         @unlink($ntmp);
-        if (!nginx_verify_or_rollback([NGINX_AVAILABLE . "/$domain"], [NGINX_ENABLED . "/$domain"])) { flash('❌ nginx 配置校验失败，建站已回滚', 'err'); redirect('websites'); }
+        if (!nginx_verify_or_rollback([cfg_path($domain)], [cfg_path($domain, 'enabled')])) { flash('❌ nginx 配置校验失败，建站已回滚', 'err'); redirect('websites'); }
         
         // Create index.html placeholder
         if (!is_dir($root)) priv_mkdir_www($root);
@@ -859,7 +865,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $body = @file_get_contents($f) ?: '';
             if (preg_match('/server_name\s+([^;]+);/', $body, $mm)) {
                 $names = preg_split('/\s+/', trim($mm[1]));
-                if (in_array($domain, $names, true)) { $cfg_name = basename($f); break; }
+                if (in_array($domain, $names, true)) { $cfg_name = preg_replace('/\.conf$/', '', basename($f)); break; }
             }
         }
         if ($cfg_name === null) $cfg_name = $domain;
@@ -867,7 +873,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Check shared config warning
         $shared_warning = '';
-        $cfg_path = NGINX_AVAILABLE . "/$cfg_name";
+        $cfg_path = cfg_path($cfg_name);
         if (file_exists($cfg_path)) {
             preg_match_all('/server_name\s+([^;]+);/', file_get_contents($cfg_path), $m);
             $all_domains = preg_split('/\s+/', trim(implode(' ', $m[1] ?? [])));
@@ -879,8 +885,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // 1. Delete Nginx config
         $nginx_del = false;
-        if (is_link(NGINX_ENABLED . "/$cfg_name") || file_exists(NGINX_ENABLED . "/$cfg_name")) { priv_unlink(NGINX_ENABLED . "/$cfg_name"); $nginx_del = !(is_link(NGINX_ENABLED . "/$cfg_name") || file_exists(NGINX_ENABLED . "/$cfg_name")); }
-        if (file_exists(NGINX_AVAILABLE . "/$cfg_name")) { priv_unlink(NGINX_AVAILABLE . "/$cfg_name"); $nginx_del = !file_exists(NGINX_AVAILABLE . "/$cfg_name"); }
+        if (is_link(cfg_path($cfg_name, 'enabled')) || file_exists(cfg_path($cfg_name, 'enabled'))) { priv_unlink(cfg_path($cfg_name, 'enabled')); $nginx_del = !(is_link(cfg_path($cfg_name, 'enabled')) || file_exists(cfg_path($cfg_name, 'enabled'))); }
+        if (file_exists(cfg_path($cfg_name))) { priv_unlink(cfg_path($cfg_name)); $nginx_del = !file_exists(cfg_path($cfg_name)); }
 
         // 2. Delete website files
         $www_dir = resolve_existing_under_root(WWW_ROOT . '/' . $domain, WWW_ROOT);
@@ -1110,7 +1116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // Create nginx config if not exists
-        if (!file_exists(NGINX_AVAILABLE . "/$domain")) {
+        if (!file_exists(cfg_path($domain))) {
             $root = WWW_ROOT . '/' . $domain;
             $php_ver = selected_php_version();
             $fpm_sock = is_alpine() ? '/run/php-fpm' . str_replace('.','',$php_ver) . '/php-fpm.sock' : '/var/run/php/php' . $php_ver . '-fpm.sock';
@@ -1118,10 +1124,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $nginx_conf = "server {\n    listen 80;\n    server_name $domain www.$domain;\n    root $root;\n    index index.php index.html;\n    client_max_body_size 100M;\n    location / { try_files \$uri \$uri/ /index.php?\$query_string; }\n    location ~ \\.php\$ { $fastcgi_inc fastcgi_pass unix:$fpm_sock; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; include fastcgi_params; }\n    location ~ /\\. { deny all; }\n}\n";
             $ntmp = tempnam('/tmp', 'ngx_site_'); chmod($ntmp, 0600);
             file_put_contents($ntmp, $nginx_conf);
-            priv_apply_file($ntmp, NGINX_AVAILABLE . "/$domain");
-            priv_nginx_link_site(NGINX_AVAILABLE . "/$domain", NGINX_ENABLED . "/$domain");
+            priv_apply_file($ntmp, cfg_path($domain));
+            priv_nginx_link_site(cfg_path($domain), cfg_path($domain, 'enabled'));
             @unlink($ntmp);
-            if (!nginx_verify_or_rollback([NGINX_AVAILABLE . "/$domain"], [NGINX_ENABLED . "/$domain"])) {
+            if (!nginx_verify_or_rollback([cfg_path($domain)], [cfg_path($domain, 'enabled')])) {
                 flash('⚠️ 站点文件已恢复，但 Nginx 配置校验失败未启用', 'err'); redirect('backups');
             }
             priv_reload_nginx();
@@ -1130,6 +1136,138 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // --- INSTALL SERVICE ---
+
+    // ===== NODE.JS 支持 =====
+    function node_sites_file(): string { return '/var/www/manager/.node_sites.json'; }
+    function node_sites_all(): array {
+        if (!is_file(node_sites_file())) return [];
+        $d = json_decode(file_get_contents(node_sites_file()), true);
+        return is_array($d) ? $d : [];
+    }
+    function node_sites_save(array $d): void {
+        file_put_contents(node_sites_file(), json_encode($d, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE));
+        @chmod(node_sites_file(), 0600);
+    }
+    function node_installed(): bool { return is_executable('/usr/bin/node') || is_executable('/usr/local/bin/node'); }
+    function node_version(): string { return trim(cmd('node -v 2>/dev/null') ?: ''); }
+
+    if ($act === 'node_install') {
+        if (node_installed()) { flash('Node.js 已安装（' . node_version() . '）', 'err'); redirect('node'); }
+        if (is_alpine()) {
+            cmd('apk update 2>&1 && apk add nodejs npm 2>&1');
+        } elseif (is_rhel()) {
+            cmd('curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>&1 && dnf install -y nodejs 2>&1');
+        } else {
+            cmd('curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs 2>&1');
+        }
+        if (node_installed()) { flash('✅ Node.js ' . node_version() . ' + npm 安装成功'); }
+        else { flash('❌ Node.js 安装失败，请查看系统日志', 'err'); }
+        redirect('node');
+    }
+
+    if ($act === 'node_site_add') {
+        $domain = strtolower(trim($_POST['ndomain'] ?? ''));
+        $port = intval($_POST['nport'] ?? 0);
+        $entry = trim($_POST['nentry'] ?? 'app.js');
+        $npm_install = isset($_POST['nnpm']);
+        if (!validate_domain($domain)) { flash('域名无效!', 'err'); redirect('node'); }
+        if ($port < 1024 || $port > 65535) { flash('端口须在 1024-65535', 'err'); redirect('node'); }
+        if (!preg_match('#^[a-zA-Z0-9._/-]{1,100}$#', $entry) || str_contains($entry, '..')) { flash('入口文件路径无效', 'err'); redirect('node'); }
+        $all = node_sites_all();
+        if (isset($all[$domain])) { flash('❌ Node 站点 ' . $domain . ' 已存在', 'err'); redirect('node'); }
+        if (is_link(cfg_path($domain, 'enabled')) || file_exists(cfg_path($domain))) { flash('❌ nginx 配置已存在（如需重建请先删除）', 'err'); redirect('node'); }
+        if (is_dir(WWW_ROOT . '/' . $domain)) { flash('❌ 目录已存在', 'err'); redirect('node'); }
+
+        $root = WWW_ROOT . '/' . $domain;
+        priv_mkdir_www($root);
+        @file_put_contents("$root/package.json", json_encode(['name'=>$domain,'version'=>'1.0.0','main'=>$entry,'scripts'=>['start'=>'node '.$entry]], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));
+        @file_put_contents("$root/$entry", "// Node.js app\nconst http = require('http');\nhttp.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<h1>Node.js 站点 $domain 运行中</h1>');}).listen($port, '127.0.0.1');\nconsole.log('listening on $port');\n");
+        $root_esc = escapeshellarg($root);
+        $entry_esc = escapeshellarg($entry);
+        if ($npm_install) cmd("cd $root_esc && npm install --production 2>&1");
+        // systemd/OpenRC 守护（复用 proc_add 模式）
+        $name = 'node-' . preg_replace('/[^a-z0-9-]/', '-', $domain);
+        $user = 'root';
+        $bin = node_installed() ? trim(cmd('command -v node 2>/dev/null') ?: 'node') : 'node';
+        if (is_alpine()) {
+            $rc = "/etc/init.d/vpsmgr-$name";
+            $sv = <<<SV
+#!/sbin/openrc-run
+name="vpsmgr-$name"
+command="$bin"
+command_args="$entry"
+command_user="$user"
+command_background="yes"
+pidfile="/run/vpsmgr-$name.pid"
+directory="$root"
+output_log="/var/log/vpsmgr-$name.log"
+error_log="/var/log/vpsmgr-$name.log"
+depend() {
+    need net
+}
+SV;
+            file_put_contents($rc, $sv); chmod($rc, 0755);
+            cmd("rc-update add vpsmgr-$name default 2>&1; rc-service vpsmgr-$name start 2>&1");
+        } else {
+            $unit = "/etc/systemd/system/vpsmgr-$name.service";
+            $uc = "[Unit]\nDescription=VPS Manager Node: $domain\nAfter=network.target\n\n[Service]\nType=simple\nUser=$user\nWorkingDirectory=$root\nExecStart=$bin $entry_esc\nRestart=on-failure\nRestartSec=5\nEnvironment=PORT=$port\nStandardOutput=append:/var/log/vpsmgr-$name.log\nStandardError=append:/var/log/vpsmgr-$name.log\n\n[Install]\nWantedBy=multi-user.target\n";
+            file_put_contents($unit, $uc);
+            cmd("systemctl daemon-reload 2>&1 && systemctl enable --now vpsmgr-$name 2>&1");
+        }
+        // nginx 反代 conf
+        $nginx_conf = "server {\n    listen 80;\n    server_name $domain www.$domain;\n    root $root;\n    index index.html;\n\n    client_max_body_size 100M;\n\n    location / {\n        proxy_pass http://127.0.0.1:$port;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade \$http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n        proxy_set_header Host \$host;\n        proxy_set_header X-Real-IP \$remote_addr;\n        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto \$scheme;\n        proxy_read_timeout 300s;\n    }\n\n    location ~ /\\. { deny all; }\n}\n";
+        $ntmp = tempnam('/tmp', 'ngx_nd_'); chmod($ntmp, 0600);
+        file_put_contents($ntmp, $nginx_conf);
+        priv_apply_file($ntmp, cfg_path($domain));
+        priv_nginx_link_site(cfg_path($domain), cfg_path($domain, 'enabled'));
+        @unlink($ntmp);
+        if (!nginx_verify_or_rollback([cfg_path($domain)], [cfg_path($domain, 'enabled')])) {
+            flash('❌ nginx 配置校验失败，Node 站点已回滚', 'err'); redirect('node');
+        }
+        cmd('nginx -s reload 2>&1');
+        $all[$domain] = ['domain'=>$domain, 'port'=>$port, 'entry'=>$entry, 'created'=>date('Y-m-d H:i')];
+        node_sites_save($all);
+        flash("✅ Node 站点 <b>$domain</b> 已创建（守护 vpsmgr-$name，nginx 反代 :$port）");
+        redirect('node');
+    }
+
+    if ($act === 'node_app_action') {
+        $domain = strtolower(trim($_POST['ndomain'] ?? ''));
+        $op = $_POST['op'] ?? '';
+        $all = node_sites_all();
+        if (!isset($all[$domain])) { flash('Node 站点不存在', 'err'); redirect('node'); }
+        $name = 'node-' . preg_replace('/[^a-z0-9-]/', '-', $domain);
+        $allowed = ['start','stop','restart','npm_install','npm_build'];
+        if (!in_array($op, $allowed, true)) { flash('操作无效', 'err'); redirect('node'); }
+        $root_esc = escapeshellarg(WWW_ROOT . '/' . $domain);
+        if ($op === 'npm_install') { cmd("cd $root_esc && npm install 2>&1"); flash('✅ npm install 已执行'); }
+        elseif ($op === 'npm_build') { cmd("cd $root_esc && npm run build 2>&1"); flash('✅ npm run build 已执行'); }
+        else {
+            $svc = "vpsmgr-$name";
+            if (is_alpine()) {
+                $map = ['start'=>'start','stop'=>'stop','restart'=>'restart'];
+                cmd('rc-service ' . $svc . ' ' . $map[$op] . ' 2>&1');
+            } else {
+                cmd('systemctl ' . $op . ' ' . $svc . ' 2>&1');
+            }
+            flash('✅ ' . sanitize($op) . ' 已执行');
+        }
+        redirect('node');
+    }
+
+    if ($act === 'node_site_del') {
+        $domain = strtolower(trim($_POST['ndomain'] ?? ''));
+        if (!isset(node_sites_all()[$domain])) { flash('Node 站点不存在', 'err'); redirect('node'); }
+        $name = 'node-' . preg_replace('/[^a-z0-9-]/', '-', $domain);
+        if (is_alpine()) { cmd("rc-service vpsmgr-$name stop 2>&1; rc-update del vpsmgr-$name default 2>&1"); @unlink("/etc/init.d/vpsmgr-$name"); }
+        else { cmd("systemctl stop vpsmgr-$name 2>&1; systemctl disable vpsmgr-$name 2>&1"); @unlink("/etc/systemd/system/vpsmgr-$name.service"); cmd('systemctl daemon-reload 2>&1'); }
+        foreach ([cfg_path($domain), cfg_path($domain, 'enabled')] as $p) { if (is_link($p) || file_exists($p)) priv_unlink($p); }
+        cmd('rm -rf ' . escapeshellarg(WWW_ROOT . "/$domain")); // 整目录删除（含 node_modules）
+        $all = node_sites_all(); unset($all[$domain]); node_sites_save($all);
+        cmd('nginx -s reload 2>&1');
+        flash("🗑️ Node 站点 $domain 已删除"); redirect('node');
+    }
+
     if ($act === 'install_svc') {
         $svc = $_POST['svc'] ?? '';
         $pkgs = [
@@ -1351,7 +1489,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // 2. Ensure nginx HTTP config exists + has acme-challenge access
-        $cfg_path = NGINX_AVAILABLE . '/' . $domain;
+        $cfg_path = cfg_path($domain);
         if (!file_exists($cfg_path)) {
             $root = WWW_ROOT . '/' . $domain;
             priv_mkdir_www($root);
@@ -1360,9 +1498,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ntmp = tempnam('/tmp', 'ngx_ssl_'); chmod($ntmp, 0600);
             file_put_contents($ntmp, $nginx_conf);
             priv_apply_file($ntmp, $cfg_path);
-            priv_nginx_link_site(NGINX_AVAILABLE . '/' . $domain, NGINX_ENABLED . '/' . $domain);
+            priv_nginx_link_site(cfg_path($domain), cfg_path($domain, 'enabled'));
             @unlink($ntmp);
-            if (!nginx_verify_or_rollback([$cfg_path], [NGINX_ENABLED . '/' . $domain])) { flash('❌ nginx 配置校验失败，SSL 前置配置已回滚', 'err'); redirect('ssl'); }
+            if (!nginx_verify_or_rollback([$cfg_path], [cfg_path($domain, 'enabled')])) { flash('❌ nginx 配置校验失败，SSL 前置配置已回滚', 'err'); redirect('ssl'); }
         }
         // 手动 ACME challenge 插入已移除：certbot --nginx 自行处理 HTTP-01（旧插入有 $1 反向引用 bug）
         cmd('nginx -t 2>&1 && ' . (is_alpine() ? 'rc-service nginx reload' : 'systemctl reload nginx'));
@@ -2360,7 +2498,7 @@ SV;
         // Apply to site root
         $sites_all = [];
         foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-            $cn = basename($f); if ($cn === 'default') continue;
+            $cn = preg_replace('/\.conf$/', '', basename($f)); if ($cn === 'default') continue;
             $cfg = file_get_contents($f);
             preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
             if (strpos($sn[1] ?? '', $dm) !== false) {
@@ -2639,7 +2777,7 @@ SV;
         // Re-gather sites here
         $_sites = [];
         foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-            $cn = basename($f); if ($cn === 'default') continue;
+            $cn = preg_replace('/\.conf$/', '', basename($f)); if ($cn === 'default') continue;
             $cfg = file_get_contents($f);
             preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
             $dms = preg_split('/\s+/', trim($sn[1] ?? $cn));
@@ -2975,11 +3113,11 @@ $disk_pct = round(100 - (disk_free() / disk_total() * 100));
 $sites = [];
 $sites_by_cfg = [];
 foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-    $cfg_name = basename($f);
-    if ($cfg_name === 'default') continue;
-    $cfg = file_get_contents($f);
+    $cfg = @file_get_contents($f) ?: '';
     if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段（php-fpm.conf 等）非 server 块
-    $enabled = is_link(NGINX_ENABLED . "/$cfg_name") || file_exists(NGINX_ENABLED . "/$cfg_name");
+    $cfg_name = preg_replace('/\.conf$/', '', basename($f));
+    if ($cfg_name === 'default') continue;
+    $enabled = is_link(cfg_path($cfg_name, 'enabled')) || file_exists(cfg_path($cfg_name, 'enabled'));
     
     // Extract primary domain from server_name
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
@@ -3145,6 +3283,7 @@ tr:hover td{background:#efe9db}
   <?= nav_link('backups', '💾', '备份与恢复', $page) ?>
   <?= nav_link('services', '⚙️', '服务', $page) ?>
   <?= nav_link('php', '🐘', 'PHP', $page) ?>
+  <?= nav_link('node', '🟢', 'Node.js', $page) ?>
   <?= nav_link('ssl', '🔒', 'SSL 证书', $page) ?>
   <?= nav_link('proxy', '🔀', '反向代理', $page) ?>
   <?= nav_link('docker', '🐳', 'Docker', $page) ?>
@@ -3551,7 +3690,67 @@ function hideModal(id) { document.getElementById(id).style.display = 'none'; }
 </script>
 
 <?php
-// ===== SERVICES =====
+// ===== NODE.JS =====
+elseif ($page === 'node'):
+  $node_ok = node_installed();
+  $nver = $node_ok ? node_version() : '';
+  $nsites = node_sites_all();
+?>
+<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+  <h2 style="margin:0">🟢 Node.js 管理</h2>
+  <?php if($node_ok): ?>
+    <span class="badge badge-ok">Node <?= sanitize($nver) ?></span>
+  <?php else: ?>
+    <form method="POST" onsubmit="return confirm('安装 Node.js 20 LTS + npm？（约 1-3 分钟）')"><?= csrf_field() ?><input type="hidden" name="action" value="node_install"><button class="btn btn-green">📦 安装 Node.js（可选）</button></form>
+  <?php endif; ?>
+</div>
+
+<?php if($node_ok): ?>
+<div class="card">
+  <h3>➕ 创建 Node 站点</h3>
+  <form method="POST" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <?= csrf_field() ?>
+    <input type="hidden" name="action" value="node_site_add">
+    <div><label style="font-size:12px;color:var(--text2)">域名</label><br><input name="ndomain" placeholder="app.example.com" required style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)"></div>
+    <div><label style="font-size:12px;color:var(--text2)">应用端口</label><br><input name="nport" type="number" min="1024" max="65535" placeholder="3000" required style="width:100px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)"></div>
+    <div><label style="font-size:12px;color:var(--text2)">入口文件</label><br><input name="nentry" value="app.js" placeholder="app.js / dist/index.js" style="width:180px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)"></div>
+    <label style="font-size:13px;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" name="nnpm" value="1"> 自动 npm install</label>
+    <button class="btn btn-green">➕ 创建</button>
+  </form>
+  <p style="font-size:11px;color:var(--text2);margin-top:8px">自动生成模板 app.js / package.json、systemd|OpenRC 守护（vpsmgr-node-域名，崩溃自动重启）、nginx 反代（含 WebSocket 升级头）。上传代码到 <code>/var/www/域名/</code> 后点 npm install / Start。</p>
+</div>
+<?php else: ?>
+<div class="card"><p style="color:var(--text2);text-align:center;padding:24px">Node.js 未安装。点击上方「安装 Node.js（可选）」开始（NodeSource 20 LTS / Alpine apk）。</p></div>
+<?php endif; ?>
+
+<?php if(!empty($nsites)): ?>
+<div class="card">
+  <h3>📦 Node 站点（<?= count($nsites) ?>）</h3>
+  <table>
+    <thead><tr><th>域名</th><th>端口</th><th>入口</th><th>守护状态</th><th>操作</th></tr></thead>
+    <tbody>
+    <?php foreach($nsites as $dm => $ns): $svc = 'vpsmgr-node-' . preg_replace('/[^a-z0-9-]/','-',$dm); $run = svc_status($svc); ?>
+    <tr>
+      <td><strong><?= sanitize($dm) ?></strong><br><a href="http://<?= sanitize($dm) ?>" target="_blank" style="font-size:11px">🔗 Visit</a></td>
+      <td><?= intval($ns['port']) ?></td>
+      <td style="font-size:12px;color:var(--text2)"><?= sanitize($ns['entry']) ?></td>
+      <td><span class="badge <?= $run?'badge-ok':'badge-err' ?>"><?= $run?'🟢 运行中':'🔴 已停止' ?></span></td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">
+        <form method="POST" style="display:inline"><?= csrf_field() ?><input type="hidden" name="action" value="node_app_action"><input type="hidden" name="ndomain" value="<?= sanitize($dm) ?>"><input type="hidden" name="op" value="<?= $run?'restart':'start' ?>"><button class="btn <?= $run?'btn-yellow':'btn-green' ?> btn-xs"><?= $run?'↻ Restart':'▶ Start' ?></button></form>
+        <?php if($run): ?><form method="POST" style="display:inline"><?= csrf_field() ?><input type="hidden" name="action" value="node_app_action"><input type="hidden" name="ndomain" value="<?= sanitize($dm) ?>"><input type="hidden" name="op" value="stop"><button class="btn btn-red btn-xs">⏹ Stop</button></form><?php endif; ?>
+        <form method="POST" style="display:inline"><?= csrf_field() ?><input type="hidden" name="action" value="node_app_action"><input type="hidden" name="ndomain" value="<?= sanitize($dm) ?>"><input type="hidden" name="op" value="npm_install"><button class="btn btn-blue btn-xs">📥 npm i</button></form>
+        <form method="POST" style="display:inline"><?= csrf_field() ?><input type="hidden" name="action" value="node_app_action"><input type="hidden" name="ndomain" value="<?= sanitize($dm) ?>"><input type="hidden" name="op" value="npm_build"><button class="btn btn-gray btn-xs">🔨 build</button></form>
+        <form method="POST" style="display:inline" <?= confirm_attr('删除 Node 站点 ' . $dm . '？目录/守护/nginx 配置将一并删除！') ?>><?= csrf_field() ?><input type="hidden" name="action" value="node_site_del"><input type="hidden" name="ndomain" value="<?= sanitize($dm) ?>"><button class="btn btn-red btn-xs">🗑️</button></form>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <p style="font-size:11px;color:var(--text2);margin-top:8px">应用日志：<code>/var/log/vpsmgr-node-域名.log</code></p>
+</div>
+<?php endif; ?>
+
+<?php
 elseif ($page === 'services'):
   $nginx_installed = pkg_installed('nginx');
   $php_installed = is_alpine() ? is_executable(php_bin(selected_php_version())) : pkg_installed(php_fpm_svc());
@@ -3769,10 +3968,10 @@ elseif ($page === 'php'):
   // Scan all nginx configs for PHP socket version
   $site_php = [];
   foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-    $cfg_name = basename($f);
-    if ($cfg_name === 'default') continue;
     $cfg = file_get_contents($f);
     if (strpos($cfg, 'server {') === false) continue; // RHEL conf.d 内部片段
+    $cfg_name = preg_replace('/\.conf$/', '', basename($f));
+    if ($cfg_name === 'default') continue;
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
     $domain = trim(explode(' ', $sn[1] ?? $cfg_name)[0]);
     if ($domain === '_' || !str_contains($domain, '.')) continue; // 反代/兜底 server
@@ -3813,7 +4012,7 @@ elseif ($page === 'ssl'):
   // Get SSL status for each site
   $ssl_sites = [];
   foreach (glob(NGINX_AVAILABLE . '/*') as $f) {
-    $cfg_name = basename($f);
+    $cfg_name = preg_replace('/\.conf$/', '', basename($f));
     if ($cfg_name === 'default') continue;
     $cfg = file_get_contents($f);
     preg_match('/server_name\s+([^;]+);/', $cfg, $sn);
