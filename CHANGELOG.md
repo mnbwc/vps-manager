@@ -12,6 +12,7 @@
 - dashboard MySQL 卡状态区分「未安装（SQLite 模式）」与「已停止」
 - terminal 页检测 ttyd(8081) 是否运行，未运行给出安装指引而非空白 iframe；iframe 协议自适应 https
 - settings 页 GitHub 链接改为 mnbwc/vps-manager
+- php 页扩展扫描 RHEL 只报实际 CLI 版本（原 php_bin 恒返回 /usr/bin/php 致 4 版本全显示）；Website PHP Versions 列表同步过滤非 server 块 conf 与 server_name _
 
 ### 已知限制
 - SVG 验证码基于 `<text>` 节点，对简单 OCR 防御能力有限；主力防线仍为一次性+短过期+失败节流。如需强 OCR 防御可后续换 hCaptcha/Turnstile。
