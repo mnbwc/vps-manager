@@ -47,8 +47,8 @@ tests/lint_forms.py  # 表单规范 lint（0 违规为通过门槛）
 
 ## 4. 真机环境（CentOS Stream 9 实测机）
 
-- IP `154.222.30.52`，NAT 端口：65397→22、18080→8080、20080→80、11443→443
-- 面板：https://154.222.30.52:18080/（HTTPS mode=on，自签证书含 IP SAN）
+- 公网 IP 见会话上下文（脱敏：`<SERVER_IP>`），NAT 端口：`65397→22`、`18080→8080`、`20080→80`、`11443→443`（下文以 `<SERVER_IP>` 指代）
+- 面板：`https://<SERVER_IP>:18080/`（HTTPS mode=on，自签证书含 IP SAN，签发时把 IP 写进 SAN）
 - 部署形态：nginx 8080(ssl) → 127.0.0.1:9001 root `php -S`（vpsmgr-panel systemd）
 - 站点目录 `/etc/nginx/conf.d/*.conf`；面板库 `/var/www/manager/.panel.db`（0600, nginx 属主）
 - 同机还跑着 Kaetram 游戏服（4100 + GM 面板 9003），与面板共存但无关
