@@ -4962,6 +4962,8 @@ elseif ($page === 'progress'):
 elseif ($page === 'siteconf'):
   $cfg_name = preg_replace('/[^a-zA-Z0-9._-]/', '', $_GET['cfg'] ?? '');
   $path = $cfg_name ? NGINX_AVAILABLE . '/' . $cfg_name : '';
+  // cfg_name 可能不带 .conf 后缀（websites 列表传入），自动补齐
+  if ($path && !file_exists($path) && file_exists($path . '.conf')) { $path .= '.conf'; }
   $conf_ok = $path && file_exists($path) && strpos(realpath($path), realpath(NGINX_AVAILABLE)) === 0;
 ?>
 <?php if (!$conf_ok): ?>
