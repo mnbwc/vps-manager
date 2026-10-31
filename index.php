@@ -788,8 +788,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $create_db = isset($_POST['create_db']);
         $install_wp = isset($_POST['install_wp']);
         $php_ver = $_POST['php_ver'] ?? selected_php_version();
-        $fpm_sock = is_alpine() ? '/run/php-fpm' . str_replace('.','',$php_ver) . '/php-fpm.sock' : '/var/run/php/php' . $php_ver . '-fpm.sock';
-        $fastcgi_inc = is_alpine() ? 'fastcgi_index index.php;' : 'include snippets/fastcgi-php.conf;'; // 审计修复：Debian 恢复发行版 snippet（PATH_INFO + try_files =404 防护）；Alpine SCRIPT_FILENAME 由模板行提供
+        $fpm_sock = is_alpine() ? '/run/php-fpm' . str_replace('.','',$php_ver) . '/php-fpm.sock' : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . $php_ver . '-fpm.sock');
+        // RHEL 无 snippets/fastcgi-php.conf（且版本化 sock 不适用 www.sock）；RHEL/Alpine 由模板行提供 SCRIPT_FILENAME
+        $fastcgi_inc = is_alpine() || is_rhel() ? 'fastcgi_index index.php;' : 'include snippets/fastcgi-php.conf;';
         if (!in_array($php_ver, ['8.2','8.3','8.4','8.5'], true)) { flash('PHP 版本无效！', 'err'); redirect('sites'); }
 
         if (!validate_domain($domain)) {
@@ -1140,8 +1141,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!file_exists(cfg_path($domain))) {
             $root = WWW_ROOT . '/' . $domain;
             $php_ver = selected_php_version();
-            $fpm_sock = is_alpine() ? '/run/php-fpm' . str_replace('.','',$php_ver) . '/php-fpm.sock' : '/var/run/php/php' . $php_ver . '-fpm.sock';
-            $fastcgi_inc = is_alpine() ? 'fastcgi_index index.php;' : 'include snippets/fastcgi-php.conf;'; // 审计修复：Debian 恢复发行版 snippet（PATH_INFO + try_files =404 防护）；Alpine SCRIPT_FILENAME 由模板行提供
+            $fpm_sock = is_alpine() ? '/run/php-fpm' . str_replace('.','',$php_ver) . '/php-fpm.sock' : (is_rhel() ? '/run/php-fpm/www.sock' : '/var/run/php/php' . $php_ver . '-fpm.sock');
+            $fastcgi_inc = is_alpine() || is_rhel() ? 'fastcgi_index index.php;' : 'include snippets/fastcgi-php.conf;';
             $nginx_conf = "server {\n    listen 80;\n    server_name $domain www.$domain;\n    root $root;\n    index index.php index.html;\n    client_max_body_size 100M;\n    location / { try_files \$uri \$uri/ /index.php?\$query_string; }\n    location ~ \\.php\$ { $fastcgi_inc fastcgi_pass unix:$fpm_sock; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; include fastcgi_params; }\n    location ~ /\\. { deny all; }\n}\n";
             $ntmp = tempnam('/tmp', 'ngx_site_'); chmod($ntmp, 0600);
             file_put_contents($ntmp, $nginx_conf);
